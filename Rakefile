@@ -16,7 +16,7 @@ namespace :setup do
     printf "rake setup:access      #setup server access\n"
     printf "rake setup:environment #install environment\n"
     printf "rake setup:config      #install app config\n"
-    
+
     printf "rake setup:sources     #install app\n"
   end
 
@@ -31,11 +31,11 @@ namespace :setup do
     print "Enter password: "
     password = $stdin.gets.strip
     public_key_data = File.read(server_config.public_key).strip
-    t.connect_remote(password: password) do 
+    t.connect_remote(password: password) do
       t.run_remote("echo #{public_key_data} >> ~/.ssh/authorized_keys")
       t.run_remote("service ssh reload")
     end
-    t.connect_remote do 
+    t.connect_remote do
       t.modify_remote_file("/etc/ssh/sshd_config") do |content|
         content << "PasswordAuthentication no\n"
         content
@@ -43,16 +43,17 @@ namespace :setup do
       t.run_remote("service ssh reload")
     end
   end
-  
+
   setup_task :ruby do |t|
     ruby_config = t.setup_config.ruby
     file_name = File.basename(ruby_config.download_path).gsub(/\.tar\.gz$/, "")
 
     t.connect_remote do
-      old_ruby = t.run_remote!("which -a ruby").strip
-      t.run_remote("rm #{old_ruby} -f") unless old_ruby.empty?
-      
-      t.run_remote("apt-get install make gcc libssl-dev openssl libreadline6 libreadline6-dev -y")
+      old_ruby = t.run_remote!("which -a ruby")
+      old_ruby = old_ruby.strip! if old_ruby
+      t.run_remote("rm #{old_ruby} -f") unless old_ruby.nil?
+      t.run_remote("apt-get update")
+      t.run_remote("apt-get install g++ build-essential openssl libreadline6 libreadline6-dev curl git-core zlib1g zlib1g-dev libssl-dev libyaml-dev libsqlite3-dev sqlite3 libxml2-dev libxslt-dev autoconf libc6-dev ncurses-dev automake libtool bison subversion -y")
       t.run_remote("wget #{ruby_config.download_path} -O #{file_name}.tar.gz")
       t.run_remote("tar -xf #{file_name}.tar.gz")
       t.run_remote("rm #{file_name}.tar.gz")
@@ -67,7 +68,7 @@ namespace :setup do
     nginx_config = t.setup_config.nginx
     file_name = File.basename(nginx_config.download_path).gsub(/\.tar\.gz$/, "")
     pcre_name = File.basename(nginx_config.pcre_path).gsub(/\.tar\.gz$/, "")
-    
+
     t.connect_remote do
       pwd = t.run_remote!("pwd").strip
 
@@ -92,18 +93,19 @@ namespace :setup do
       t.run_remote("debconf-set-selections <<< '#{package_name} mysql-server/root_password password #{mysql_password}'")
       t.run_remote("debconf-set-selections <<< '#{package_name} mysql-server/root_password_again password #{mysql_password}'")
       t.run_remote("apt-get update")
-      t.run_remote("apt-get -y install #{package_name}")
+      t.run_remote("apt-get -y install #{package_name} libmysqlclient-dev")
     end
   end
   setup_task :app_config do |t|
     rails_config = t.setup_config.rails
-    app_path = "/var/www/#{rails_config.domain}" 
+    app_path = "/var/www/#{rails_config.domain}"
     server_name = rails_config.domain.gsub(/\./, "-")
 
     shared_files = rails_config.capistrano ? "#{app_path}/shared" : "#{app_path}"
     project_files = rails_config.capistrano ? "#{app_path}/current" : "#{app_path}"
 
-    t.connect_remote do 
+    t.connect_remote do
+      t.run_remote("gem install bundler")
       password = t.run_remote!("cat .mysqlpwd").strip
       t.run_remote("mkdir -p #{shared_files}")
       t.run_remote("rm #{shared_files}/* -Rf")
@@ -112,7 +114,7 @@ namespace :setup do
         yaml["production"]["password"] = password
         yaml
       end
-      
+
       t.run_remote("mkdir -p /etc/thin")
       t.upload_modified_yaml(t.resolve_path("templates/thin.yml"), "/etc/thin/#{rails_config.domain}.yml") do |yaml|
         yaml["chdir"] = project_files
@@ -122,20 +124,20 @@ namespace :setup do
 
       t.run_remote("mkdir -p /var/log/nginx/")
       t.upload!(t.resolve_path("templates/nginx"), "/etc/nginx/")
-      
+
       t.run_remote("mkdir -p /etc/nginx/sites-available")
       t.run_remote("mkdir -p /etc/nginx/sites-enabled")
       t.upload_modified_file(t.resolve_path("templates/nginx/site_config"), "/etc/nginx/sites-available/#{rails_config.domain}") do |site_config|
         sprintf(site_config, server_name: server_name, project_files: project_files, domain_name: rails_config.domain)
       end
       t.run_remote("ln -s /etc/nginx/sites-available/#{rails_config.domain} /etc/nginx/sites-enabled/#{rails_config.domain}")
-      
+
       t.upload_modified_file(t.resolve_path("templates/init.d/app"), "/etc/init.d/#{rails_config.domain}") do |config|
         sprintf(config, project_files: project_files, domain_name: rails_config.domain)
       end
-      
+
       t.upload!(t.resolve_path("templates/init.d/nginx"), "/etc/init.d/nginx")
-      
+
       t.run_remote("chmod +x /etc/init.d/nginx")
       t.run_remote("chmod +x /etc/init.d/#{rails_config.domain}")
 
@@ -146,9 +148,9 @@ namespace :setup do
 
   setup_task :db_backups do |t|
     backup_config = t.setup_config.rails.db_backup
-    
+
     if backup_config && backup_config.aws
-      t.connect_remote do 
+      t.connect_remote do
 
         t.run_remote("apt-get install s3cmd -y")
         pwd = t.run_remote!("pwd").strip
